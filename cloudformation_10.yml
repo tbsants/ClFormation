@@ -1,0 +1,518 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cria um ambiente com dois servidores Web, um LoadBalancer e um Auto Scaling.
+
+Parameters:
+  KeyName:
+    Default: 'LinuxServers'
+    Type: String
+  InstanceType:
+    Default: 't2.micro'
+    Type: String
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+  AWSRegionArch2AMI:
+    us-east-2:
+      HVM64: ami-0233c2d874b811deb
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 148.91.0.0/16
+      EnableDnsHostnames: 'true'
+      EnableDnsSupport: 'true'
+      Tags:
+        - Key: Name
+          Value: vpc-tbsantos
+  SubnetPrivate1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-2a
+      CidrBlock: 148.91.2.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: subnet1-tbsantos
+  SubnetPrivate2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-2b
+      CidrBlock: 148.91.3.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: subnet2-tbsantos
+  SubnetPublic1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-2a
+      CidrBlock: 148.91.10.0/24
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: SubnetPublic1-tbsantos
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-2b
+      CidrBlock: 148.91.11.0/24
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: SubnetPublic2-tbsantos
+  RouteTablePrivate:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: rtb-tbsantos-private
+  RouteTablePublic:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: rtb-tbsantos-public
+  SubnetRouteTableAssociation1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetPrivate1
+      RouteTableId: !Ref RouteTablePrivate
+  SubnetRouteTableAssociation2:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetPrivate2
+      RouteTableId: !Ref RouteTablePrivate
+  SubnetRouteTableAssociation3:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetPublic1
+      RouteTableId: !Ref RouteTablePublic
+  SubnetRouteTableAssociation4:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetPublic2
+      RouteTableId: !Ref RouteTablePublic
+  WebServerSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: WebServerSG
+      GroupDescription: Allow ssh http and icmp
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: WebServerSG
+      SecurityGroupIngress:
+      - FromPort: 22
+        ToPort: 22
+        IpProtocol: 'tcp'
+        SourceSecurityGroupId: !Ref SGBastion
+      - SourceSecurityGroupId: !Ref SGLoadBalancer
+        FromPort: 80
+        ToPort: 80
+        IpProtocol: 'tcp'       
+      - CidrIp: 0.0.0.0/0
+        FromPort: -1
+        ToPort: -1
+        IpProtocol: 'icmp'
+  SGBastion:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Sub Bastion-${AWS::StackName}-security-group
+      GroupDescription: Allow ssh
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub Bastion-${AWS::StackName}-security-group
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: 'tcp'
+          FromPort: 22
+          ToPort: 22
+  SGLoadBalancer:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: SGLoadBalancer
+      GroupDescription: Allow ssh http and icmp
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub LB-${AWS::StackName}-sec-group
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: 80
+        ToPort: 80
+        IpProtocol: 'tcp'
+  IGW:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: igw-tbsantos
+  VpcGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+  Route:
+    Type: 'AWS::EC2::Route'
+    DependsOn: IGW
+    Properties:
+      RouteTableId: !Ref RouteTablePublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    DependsOn: IGW
+    Properties:
+      AllocationId: !GetAtt ElasticIpAddress.AllocationId
+      SubnetId: !Ref SubnetPublic1
+      SubnetId: !Ref SubnetPublic2
+      Tags:
+        - Key: Name
+          Value: !Sub Nat-${AWS::StackName}
+  ElasticIpAddress:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      Domain: VPC
+  RouteNgw:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  NetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: acl-subnet-tbsantos
+  SubnetNetworkAclAssociation1:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref SubnetPrivate1
+  SubnetNetworkAclAssociation2:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref SubnetPrivate2
+  InboundSshNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '100'
+      RuleAction: 'Allow'
+      Egress: 'false'
+      CidrBlock: 148.91.10.0/24
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+  OutboundSshNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '100'
+      RuleAction: 'Allow'
+      Egress: 'true'
+      CidrBlock: 148.91.10.0/24
+      Protocol: '6'
+      PortRange:
+        From: '22'
+        To: '22'
+  InboundHttpNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '150'
+      RuleAction: 'Allow'
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+  OutboundHttpNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '150'
+      RuleAction: 'Allow'
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      Protocol: '6'
+      PortRange:
+        From: '80'
+        To: '80'
+  InboundIcmpv4NetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '200'
+      RuleAction: 'allow'
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      Protocol: -1
+  OutboundIcmpV4NetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '200'
+      RuleAction: 'allow'
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      Protocol: -1
+  InboundResponsePortsNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '250'
+      RuleAction: 'Allow'
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+  OutboundResponsePortsNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: '250'
+      RuleAction: 'Allow'
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      Protocol: '6'
+      PortRange:
+        From: '1024'
+        To: '65535'
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: AlbTbsantos
+      SecurityGroups:
+        - !Ref SGLoadBalancer
+      Subnets:
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: TtGroupTbsantos
+      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 30
+      UnhealthyThresholdCount: 2
+      HealthyThresholdCount: 5
+      HealthCheckPath: /
+      Matcher: 
+        HttpCode: 200,302
+      Port: 80
+      Protocol: HTTP
+      Targets:
+        - Id: !Ref WebServer1
+          Port: 80
+        - Id: !Ref WebServer2
+          Port: 80
+      TargetType: instance
+      VpcId: !Ref VPC
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup  
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+  ApplicationAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: 
+      - Route
+      - SubnetRouteTableAssociation1
+      - SubnetRouteTableAssociation2    
+    Properties:
+      AutoScalingGroupName: ApplicationAsg
+      MinSize: '2'
+      MaxSize: '4'
+      DesiredCapacity: '2'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AsgLaunchTemplate
+        Version: !GetAtt AsgLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref SubnetPrivate1
+        - !Ref SubnetPrivate2
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+  WebServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ApplicationAsg
+      Cooldown: '60'
+      ScalingAdjustment: '1'
+  WebServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ApplicationAsg
+      Cooldown: '60'
+      ScalingAdjustment: '-1'
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 70% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '2'
+      Threshold: '70'
+      AlarmActions: 
+        - !Ref WebServerScaleUpPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ApplicationAsg
+      ComparisonOperator: GreaterThanThreshold
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 70% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '2'
+      Threshold: '70'
+      AlarmActions:
+        - Ref: WebServerScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ApplicationAsg
+      ComparisonOperator: LessThanThreshold
+  AsgLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-launch-template
+      LaunchTemplateData:
+        CreditSpecification:
+          CpuCredits: Unlimited
+        ImageId:
+          Fn::FindInMap:
+            - AWSRegionArch2AMI
+            - !Ref AWS::Region
+            - Fn::FindInMap:
+                - AWSInstanceType2Arch
+                - !Ref InstanceType
+                - Arch
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        Monitoring:
+          Enabled: True
+        SecurityGroupIds:
+          - !Ref WebServerSG
+        UserData:
+          'Fn::Base64':
+            !Sub |
+              #! /bin/bash
+              sudo su
+              yum update -y
+              yum install httpd -y
+              systemctl start httpd
+              systemctl enable httpd
+              cd /var/www/html
+              echo "<html><h1> -- Site Funcionando - WebServer ASG  -- </h1></html>" > index.html  
+  WebServer1:
+    Type: AWS::EC2::Instance
+    Properties: 
+      ImageId: ami-0233c2d874b811deb
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - GroupSet:
+          - !Ref WebServerSG
+          DeviceIndex: '0'
+          SubnetId: !Ref SubnetPrivate1
+          AssociatePublicIpAddress: 'false'
+      Tags:
+        - Key: Name
+          Value: ec2-webserver1
+      UserData:
+        'Fn::Base64':
+          !Sub |
+            #! /bin/bash
+            sudo su
+            yum update -y
+            yum install httpd -y
+            systemctl start httpd
+            systemctl enable httpd
+            cd /var/www/html
+            echo "<html><h1> -- Site Funcionando - WebServer1  -- </h1></html>" > index.html  
+  WebServer2:
+    Type: AWS::EC2::Instance
+    Properties: 
+      ImageId: ami-0233c2d874b811deb
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - GroupSet:
+          - !Ref WebServerSG
+          DeviceIndex: '0'
+          SubnetId: !Ref SubnetPrivate2
+          AssociatePublicIpAddress: 'false'
+      Tags:
+        - Key: Name
+          Value: ec2-webserver2
+      UserData:
+        'Fn::Base64':
+          !Sub |
+            #! /bin/bash
+            sudo su
+            yum update -y
+            yum install httpd -y
+            systemctl start httpd
+            systemctl enable httpd
+            cd /var/www/html
+            echo "<html><h1> -- Site Funcionando - WebServer2  -- </h1></html>" > index.html
+  BastionHost:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: ami-0233c2d874b811deb
+      KeyName: !Ref KeyName
+      InstanceType: !Ref InstanceType
+      NetworkInterfaces:
+        - GroupSet:
+          - !Ref SGBastion
+          DeviceIndex: '0'
+          SubnetId: !Ref SubnetPublic1
+          AssociatePublicIpAddress: 'true'
+      Tags:
+        - Key: Name
+          Value: BastionHost
+
+
+dgoshgsudghsg
+gsdfgsg
+sdfgsdfg
+sdfsgsdfgsdfgsdfgs
+sdfgsdfgdgoshgsudghsg
+gsdfgsg
+sdfgsdfg
+sdfsgsdfgsdfgsdfgs
+sdfgsdfgdgoshgsudghsg
+gsdfgsg
+sdfgsdfg
+sdfsgsdfgsdfgsdfgs
+sdfgsdfgdgoshgsudghsg
+gsdfgsg
+sdfgsdfg
+sdfsgsdfgsdfgsdfgs
+sdfgsdfg
